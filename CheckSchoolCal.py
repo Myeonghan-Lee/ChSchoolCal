@@ -14,7 +14,6 @@ st.set_page_config(page_title="학사일정 점검 시스템", page_icon="📋",
 # 1. 음력 → 양력 변환
 # ============================================================
 def lunar_to_solar(lunar_year, lunar_month, lunar_day):
-    """음력 날짜를 양력 date로 변환"""
     cal = KoreanLunarCalendar()
     cal.setLunarDate(lunar_year, lunar_month, lunar_day, False)
     return date(*map(int, cal.SolarIsoFormat().split('-')))
@@ -29,27 +28,39 @@ def next_weekday_not_in(start, existing):
         d += timedelta(days=1)
     return d
 
-def apply_substitute(base_dates, name, all_dates, no_substitute=False):
+def apply_substitute_single(holiday_date, name, all_dates, no_substitute=False):
     """
-    base_dates: 해당 공휴일의 원래 날짜 리스트
-    name: 공휴일 이름
-    all_dates: 이미 확정된 공휴일 날짜 set (중복 방지)
-    no_substitute: True이면 대체공휴일 미적용 (현충일 등)
-    반환: [(date, name), ...] 리스트
+    일반 공휴일(1일짜리)의 대체공휴일 계산
+    - 해당 날이 토/일이면 다음 첫 평일을 대체공휴일로 추가
     """
-    result = [(d, name) for d in base_dates]
+    result = [(holiday_date, name)]
     if no_substitute:
         return result
 
-    # 주말(토/일)에 걸리는 날 수 = 대체공휴일 필요 수
-    weekend_count = sum(1 for d in base_dates if d.weekday() >= 5)
-    if weekend_count > 0:
-        last_day = max(base_dates)
-        occupied = all_dates | set(base_dates)
-        for _ in range(weekend_count):
-            sub = next_weekday_not_in(last_day + timedelta(days=1), occupied)
-            result.append((sub, f"{name} 대체공휴일"))
-            occupied.add(sub)
+    if holiday_date.weekday() >= 5:  # 토 or 일
+        occupied = all_dates | {holiday_date}
+        sub = next_weekday_not_in(holiday_date + timedelta(days=1), occupied)
+        result.append((sub, f"{name} 대체공휴일"))
+
+    return result
+
+def apply_substitute_holiday3(center_date, name, all_dates):
+    """
+    명절(3일 연휴: 설날/추석)의 대체공휴일 계산
+    ★ 핵심 규칙: 명절 '당일'이 토요일 또는 일요일일 때만 대체공휴일 1일 추가
+    - 연휴 3일(전날/당일/다음날)은 무조건 공휴일로 등록
+    """
+    day_before = center_date - timedelta(days=1)
+    day_after  = center_date + timedelta(days=1)
+    base_days  = [day_before, center_date, day_after]
+
+    result = [(d, f"{name} 연휴") for d in base_days]
+
+    # 당일이 토요일 또는 일요일인 경우에만 대체공휴일 추가
+    if center_date.weekday() >= 5:
+        occupied = all_dates | set(base_days)
+        sub = next_weekday_not_in(day_after + timedelta(days=1), occupied)
+        result.append((sub, f"{name} 대체공휴일"))
 
     return result
 
@@ -60,58 +71,61 @@ def generate_holidays(school_year):
     """
     학년도(school_year) 기준 공휴일 자동 생성
     범위: school_year.3.1 ~ (school_year+1).2.28
-    반환: {date: name} 딕셔너리
     """
     Y = school_year
-    all_dates = set()  # 중복 방지용
-    holidays = []      # (date, name) 리스트
+    all_dates = set()
+    holidays = []
 
-    # --- 음력 기반 공휴일 ---
-    # 부처님오신날 (음력 Y.4.8)
-    buddha = lunar_to_solar(Y, 4, 8)
-    # 추석 (음력 Y.8.15) → 3일 연휴
+    # --- 음력 공휴일 ---
+    buddha         = lunar_to_solar(Y, 4, 8)
     chuseok_center = lunar_to_solar(Y, 8, 15)
-    chuseok_days = [chuseok_center + timedelta(days=i) for i in range(-1, 2)]
-    # 설날 (음력 (Y+1).1.1) → 3일 연휴
     seollal_center = lunar_to_solar(Y + 1, 1, 1)
-    seollal_days = [seollal_center + timedelta(days=i) for i in range(-1, 2)]
 
-    # --- 양력 고정 공휴일 (학년도 범위 내) ---
+    # --- 양력 고정 공휴일 (일반: 당일이 토/일이면 대체공휴일) ---
     fixed = [
-        ([date(Y, 3, 1)],    "삼일절",     False),
-        ([date(Y, 5, 5)],    "어린이날",    False),
-        ([date(Y, 6, 6)],    "현충일",      True),  # 대체공휴일 미적용
-        ([date(Y, 8, 15)],   "광복절",      False),
-        ([date(Y, 10, 3)],   "개천절",      False),
-        ([date(Y, 10, 9)],   "한글날",      False),
-        ([date(Y, 12, 25)],  "기독탄신일",   False),
-        ([date(Y + 1, 1, 1)],"신정",        False),
+        (date(Y, 3, 1),     "삼일절",     False),
+        (date(Y, 5, 5),     "어린이날",   False),
+        (date(Y, 6, 6),     "현충일",     True),   # 대체공휴일 미적용
+        (date(Y, 8, 15),    "광복절",     False),
+        (date(Y, 10, 3),    "개천절",     False),
+        (date(Y, 10, 9),    "한글날",     False),
+        (date(Y, 12, 25),   "기독탄신일", False),
+        (date(Y + 1, 1, 1), "신정",       False),
     ]
-
-    # 제헌절 (2026년부터 공휴일 재지정)
     if Y >= 2026:
-        fixed.append(([date(Y, 7, 17)], "제헌절", False))
+        fixed.append((date(Y, 7, 17), "제헌절", False))
 
-    # 음력 공휴일 추가
-    lunar = [
-        ([buddha],       "부처님오신날", False),
-        (chuseok_days,   "추석",        False),
-        (seollal_days,   "설날",        False),
-    ]
-
-    # 모든 공휴일에 대체공휴일 적용
-    for base_dates, name, no_sub in fixed + lunar:
-        entries = apply_substitute(base_dates, name, all_dates, no_sub)
+    # ① 일반 공휴일 처리 (1일짜리)
+    for hdate, hname, no_sub in fixed:
+        entries = apply_substitute_single(hdate, hname, all_dates, no_sub)
         for d, n in entries:
             all_dates.add(d)
             holidays.append((d, n))
 
-    # 학년도 범위 필터링: Y.3.1 ~ (Y+1).2.28
+    # ② 부처님오신날 (1일짜리, 대체공휴일 적용)
+    entries = apply_substitute_single(buddha, "부처님오신날", all_dates, False)
+    for d, n in entries:
+        all_dates.add(d)
+        holidays.append((d, n))
+
+    # ③ 추석 (3일 연휴, 당일 기준 대체공휴일)
+    entries = apply_substitute_holiday3(chuseok_center, "추석", all_dates)
+    for d, n in entries:
+        all_dates.add(d)
+        holidays.append((d, n))
+
+    # ④ 설날 (3일 연휴, 당일 기준 대체공휴일)
+    entries = apply_substitute_holiday3(seollal_center, "설날", all_dates)
+    for d, n in entries:
+        all_dates.add(d)
+        holidays.append((d, n))
+
+    # 학년도 범위 필터: Y.3.1 ~ (Y+1).2.28
     start = date(Y, 3, 1)
-    end = date(Y + 1, 2, 28)
+    end   = date(Y + 1, 2, 28)
     holidays = [(d, n) for d, n in holidays if start <= d <= end]
 
-    # 평일만 필터링 (토/일은 수업일 계산에서 자동 제외되므로 의미 없음)
+    # 평일만 필터 (토/일은 수업일 계산에서 이미 제외됨)
     holidays = [(d, n) for d, n in holidays if d.weekday() < 5]
 
     return dict(sorted(holidays, key=lambda x: x[0]))
@@ -196,7 +210,6 @@ def check_school(file_name, df, holidays_set):
     for r12, r3 in zip(rows_12, rows_3):
         sname = str(r12.iloc[6]) if pd.notna(r12.iloc[6]) else school_name
 
-        # 날짜 추출
         open_12      = to_date(r12.iloc[16])
         open_3       = to_date(r3.iloc[16])
         s_close_12   = to_date(r12.iloc[17])
@@ -212,10 +225,10 @@ def check_school(file_name, df, holidays_set):
         if grad_3 is None:
             grad_3   = to_date(r3.iloc[21])
 
-        sem1_12, sem2_12     = to_int(r12.iloc[13]), to_int(r12.iloc[14])
-        sem1_3,  sem2_3      = to_int(r3.iloc[13]),  to_int(r3.iloc[14])
-        disc1_12, disc2_12   = to_int(r12.iloc[51]), to_int(r12.iloc[52])
-        disc1_3,  disc2_3    = to_int(r3.iloc[51]),  to_int(r3.iloc[52])
+        sem1_12, sem2_12   = to_int(r12.iloc[13]), to_int(r12.iloc[14])
+        sem1_3,  sem2_3    = to_int(r3.iloc[13]),  to_int(r3.iloc[14])
+        disc1_12, disc2_12 = to_int(r12.iloc[51]), to_int(r12.iloc[52])
+        disc1_3,  disc2_3  = to_int(r3.iloc[51]),  to_int(r3.iloc[52])
 
         details.append(f"\n### 🏫 {sname}")
 
@@ -302,26 +315,20 @@ def check_school(file_name, df, holidays_set):
 st.title("📋 고등학교 학사일정 점검 시스템")
 st.markdown("---")
 
-# ------ 사이드바: 학년도 선택 & 공휴일 관리 ------
 with st.sidebar:
     st.header("⚙️ 설정")
 
-    # 학년도 선택
     current_year = date.today().year
     school_year = st.number_input(
-        "📅 학년도 선택",
-        min_value=2020, max_value=2040,
+        "📅 학년도 선택", min_value=2020, max_value=2040,
         value=current_year,
         help=f"학사일정 범위: 선택연도.3.1 ~ 다음연도.2.28"
     )
     st.caption(f"📆 적용 범위: **{school_year}.3.1 ~ {school_year+1}.2.28**")
 
     st.markdown("---")
-
-    # --- 공휴일 자동 생성 ---
     st.header("📅 공휴일 관리")
 
-    # 세션 스테이트 초기화
     if "holidays" not in st.session_state or st.session_state.get("last_year") != school_year:
         try:
             st.session_state.holidays = generate_holidays(school_year)
@@ -339,11 +346,9 @@ with st.sidebar:
         except Exception as e:
             st.error(f"생성 실패: {e}")
 
-    # 현재 공휴일 목록
     st.subheader(f"현재 공휴일 ({len(st.session_state.holidays)}일)")
     dow_names = ["월","화","수","목","금","토","일"]
 
-    # 삭제 기능 포함 목록
     to_delete = None
     for d in sorted(st.session_state.holidays.keys()):
         n = st.session_state.holidays[d]
@@ -357,7 +362,6 @@ with st.sidebar:
         del st.session_state.holidays[to_delete]
         st.rerun()
 
-    # 공휴일 수동 추가
     st.markdown("---")
     st.subheader("➕ 공휴일 수동 추가")
     st.caption("선거일 등 임시 공휴일을 추가하세요")
@@ -379,7 +383,6 @@ with st.sidebar:
         else:
             st.warning("공휴일 이름을 입력하세요")
 
-    # 점검 기준 안내
     st.markdown("---")
     st.header("📖 점검 기준")
     st.markdown("""
@@ -394,7 +397,7 @@ with st.sidebar:
     - 겨울개학식 있으면: + (종업/졸업식 − 겨울개학식)
     """)
 
-# ------ 메인: 파일 업로드 & 점검 ------
+# ------ 메인 영역 ------
 holidays_set = set(st.session_state.holidays.keys())
 
 st.header("📂 파일 업로드")
@@ -426,7 +429,6 @@ if uploaded_files:
             }
             total_errors += 1
 
-    # 요약
     st.subheader("📊 전체 요약")
     col1, col2, col3 = st.columns(3)
     col1.metric("점검 학교 수", f"{len(all_results)}개")
@@ -475,4 +477,11 @@ else:
         | 1 | 개학일 비교 | 1~2학년과 3학년 동일 여부 |
         | 2 | 1학기 수업일수 | 개학일~여름방학식 평일 − 공휴일 − 재량휴업일 |
         | 3 | 2학기 수업일수 | 여름개학식~겨울방학식 평일 − 공휴일 − 재량휴업일 + 겨울개학 후 구간 |
+
+        ### 대체공휴일 규칙
+        | 구분 | 규칙 |
+        |:---|:---|
+        | **설날·추석** | 명절 **당일**이 토/일일 때만 대체공휴일 추가 |
+        | **기타 공휴일** | 해당일이 토/일이면 대체공휴일 추가 |
+        | **현충일** | 대체공휴일 미적용 |
         """)
